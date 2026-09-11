@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-base: #0a0d14;
+    --bg-surface: #0f1523;
+    --border-muted: #1e293b;
+    --accent-emerald: #10b981;
+    --accent-cyan: #06b6d4;
+    --accent-amber: #f59e0b;
+    --accent-rose: #f43f5e;
+  }
+  body {
+    background-color: #07090e;
+    color: #f1f5f9;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    overflow-x: hidden;
+  }
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Glassmorphic panels */
+.glass-panel {
+  background: rgba(13, 19, 33, 0.78);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(51, 65, 85, 0.45);
+  box-shadow: 0 12px 36px 0 rgba(0, 0, 0, 0.65);
+}
+
+.glass-panel-heavy {
+  background: rgba(9, 14, 26, 0.94);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(51, 65, 85, 0.65);
+  box-shadow: 0 20px 50px -15px rgba(0, 0, 0, 0.85);
+}
+
+/* Tactical scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #070a12;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Custom Leaflet Dark styling */
+.leaflet-container {
+  background-color: #060911 !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+
+/* High-contrast tactical dark mode for map tiles with NO API key or watermarks */
+.tactical-dark-tiles {
+  filter: invert(100%) hue-rotate(180deg) brightness(82%) contrast(110%) saturate(30%) !important;
+}
+
+.leaflet-bar {
+  border: 1px solid #1e293b !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.7) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+.leaflet-bar a {
+  background-color: rgba(13, 19, 33, 0.92) !important;
+  color: #94a3b8 !important;
+  border-bottom: 1px solid #1e293b !important;
+}
+.leaflet-bar a:hover {
+  background-color: #1e293b !important;
+  color: #38bdf8 !important;
+}
+.leaflet-control-attribution {
+  background: rgba(9, 13, 22, 0.85) !important;
+  color: #64748b !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 10px !important;
+  border-top-left-radius: 4px;
+  border-left: 1px solid #1e293b !important;
+  border-top: 1px solid #1e293b !important;
+}
+.leaflet-control-attribution a {
+  color: #38bdf8 !important;
+}
+
+/* Custom pulsing animation for markers */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(2.0);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(0.85);
+    opacity: 0.9;
+  }
+}
+.animate-pulse-ring {
+  animation: pulse-ring 2.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* Tactical scan grid */
+.grid-overlay {
+  background: linear-gradient(rgba(18, 24, 38, 0) 50%, rgba(0, 0, 0, 0.3) 50%),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.02), rgba(0, 0, 0, 0.01), rgba(56, 189, 248, 0.02));
+  background-size: 100% 4px, 6px 100%;
+  pointer-events: none;
+}
