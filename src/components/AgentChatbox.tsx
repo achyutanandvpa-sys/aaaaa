@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { CityModelOutput, SupportedCrop } from '../types.ts';
+import { snapCoordinatesToNearestStation } from '../data/citiesData.ts';
 import {
   IndianLanguageCode,
   INDIAN_LANGUAGES,
@@ -28,7 +29,6 @@ export interface ChatMessage {
   text: string;
   timestamp: string;
   languageCode?: IndianLanguageCode;
-  modelBadge?: string;
   isSpeaking?: boolean;
 }
 
@@ -59,21 +59,74 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState<boolean>(false);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
 
+  // Auto-fetch user location states
+  const [isLocatingUser, setIsLocatingUser] = useState<boolean>(true);
+  const [userLocationSnap, setUserLocationSnap] = useState<{
+    cityName: string;
+    stateName: string;
+    distanceKm: number;
+  } | null>(null);
+
   const activeLangConfig = INDIAN_LANGUAGES[selectedLang] || INDIAN_LANGUAGES.hi;
 
-  // Initialize conversation with multilingual greeting
+  const getGreetingText = (langCode: IndianLanguageCode, cName: string, cId: number) => {
+    switch (langCode) {
+      case 'hi':
+        return `नमस्ते! आपकी लोकेशन के आधार पर **#${cId} ${cName}** स्टेशन चुना गया है। आप क्या जानना चाहते हैं?`;
+      case 'en':
+        return `Hello! Station **#${cId} ${cName}** has been automatically detected for your location. What would you like to know?`;
+      default:
+        return INDIAN_LANGUAGES[langCode]?.welcomeMessage || `Hello! Station #${cId} ${cName} active for your location. How can I help you?`;
+    }
+  };
+
+  // Initialize conversation with concise greeting grounded in selected station
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     {
       id: 'welcome-1',
       role: 'assistant',
-      text: activeLangConfig.welcomeMessage,
+      text: getGreetingText('hi', currentCity.city.name, currentCity.city.id),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      languageCode: selectedLang,
-      modelBadge: 'Gemini 3.8 Flash',
+      languageCode: 'hi',
     },
   ]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-fetch user location from browser GPS
+  const detectUserLocation = () => {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
+      setIsLocatingUser(false);
+      return;
+    }
+
+    setIsLocatingUser(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        const snap = snapCoordinatesToNearestStation(latitude, longitude);
+        setUserLocationSnap({
+          cityName: snap.nearestCity.city.name,
+          stateName: snap.nearestCity.city.state,
+          distanceKm: snap.distanceKm,
+        });
+        setSelectedCityId(snap.nearestCity.city.id);
+        if (onSelectCity) {
+          onSelectCity(snap.nearestCity);
+        }
+        setIsLocatingUser(false);
+      },
+      () => {
+        setIsLocatingUser(false);
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  // Trigger location fetch on mount
+  useEffect(() => {
+    detectUserLocation();
+  }, []);
 
   useEffect(() => {
     // Keep internal city ID in sync if external currentCity changes
@@ -89,15 +142,13 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
   const handleLanguageChange = (langCode: IndianLanguageCode) => {
     setSelectedLang(langCode);
     setIsLangDropdownOpen(false);
-    const newConfig = INDIAN_LANGUAGES[langCode];
     // Add assistant announcement in new language
     const welcomeMsg: ChatMessage = {
       id: `lang-switch-${Date.now()}`,
       role: 'assistant',
-      text: newConfig.welcomeMessage,
+      text: getGreetingText(langCode, currentCity.city.name, currentCity.city.id),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       languageCode: langCode,
-      modelBadge: 'Gemini 3.8 Flash',
     };
     setMessages((prev) => [...prev, welcomeMsg]);
   };
@@ -151,7 +202,6 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
         text: replyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         languageCode: selectedLang,
-        modelBadge: data.model || 'Gemini 3.8 Flash',
       };
 
       setMessages((prev) => [...prev, botMsg]);
@@ -159,7 +209,7 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
       const fallbackMsg: ChatMessage = {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        text: `⚠️ Network timeout or connection interrupted. Here is live telemetry for ${currentCity.city.name}: ${currentCity.weather.tempC}°C, Rain: ${currentCity.weather.precipitationMm} mm/h. Please retry your inquiry.`,
+        text: `⚠️ कनेक्शन बाधित हुआ। वर्तमान तापमान: ${Math.round(currentCity.weather.tempC)}°C, बारिश: ${currentCity.weather.precipitationMm} मिमी/घंटा।`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         languageCode: selectedLang,
       };
@@ -252,9 +302,6 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
           <div>
             <div className="flex items-center gap-1.5 font-bold text-white text-xs sm:text-sm">
               <span>WeatherGPT AI Agent</span>
-              <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-normal">
-                Google Gemini API
-              </span>
             </div>
             <p className="text-[10px] text-slate-400 font-sans hidden sm:block">
               130 Cities • 1h Weather • 3h Hazard Radar • Agro Intel
@@ -311,25 +358,39 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
         </div>
       </div>
 
-      {/* Target City Selector Bar */}
-      <div className="p-2 px-3 bg-slate-900/80 border-b border-slate-850 flex items-center justify-between gap-2 shrink-0">
-        <div className="flex items-center gap-1.5 text-slate-400 text-[11px] min-w-0">
-          <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-          <span className="shrink-0">{activeLangConfig.labels.switchStation}:</span>
-          <select
-            value={selectedCityId}
-            onChange={(e) => handleCitySelectChange(parseInt(e.target.value, 10))}
-            className="bg-slate-950 text-cyan-300 font-bold text-[11px] rounded px-2 py-0.5 border border-slate-800 outline-none truncate max-w-[190px] cursor-pointer"
+      {/* User Location Bar: Automatically Fetched from Device GPS */}
+      <div className="p-2 px-3 bg-slate-900/90 border-b border-slate-850 flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-950/70 border border-cyan-800/50 text-cyan-300 text-[11px] font-medium truncate">
+            <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            {isLocatingUser ? (
+              <span className="flex items-center gap-1.5 text-slate-300 font-sans">
+                <Loader2 className="w-3 h-3 animate-spin text-cyan-400 shrink-0" />
+                आपकी लोकेशन खोजी जा रही है...
+              </span>
+            ) : (
+              <span className="truncate font-sans">
+                <span className="text-slate-400">आपकी लोकेशन: </span>
+                <strong className="text-white font-bold">{currentCity.city.name}</strong>, {currentCity.city.state}
+                {userLocationSnap && (
+                  <span className="text-cyan-400 font-mono text-[10px] ml-1">
+                    ({userLocationSnap.distanceKm.toFixed(1)} km)
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+
+          <button
+            onClick={detectUserLocation}
+            title="GPS लोकेशन पुनः प्राप्त करें (Re-fetch Location)"
+            className="p-1.5 rounded-lg bg-slate-850 hover:bg-slate-800 border border-slate-750 text-slate-400 hover:text-cyan-300 transition-colors shrink-0"
           >
-            {allCities.map((c) => (
-              <option key={c.city.id} value={c.city.id}>
-                #{c.city.id} {c.city.name} ({c.city.state})
-              </option>
-            ))}
-          </select>
+            <RefreshCw className={`w-3 h-3 ${isLocatingUser ? 'animate-spin text-cyan-400' : ''}`} />
+          </button>
         </div>
 
-        <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60 shrink-0 font-bold">
+        <span className="text-[10px] text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60 shrink-0 font-bold font-mono">
           {Math.round(currentCity.weather.tempC)}°C • {currentCity.disaster.riskLevel}
         </span>
       </div>
@@ -365,11 +426,6 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
                     <Sparkles className="w-3 h-3" />
                     <span>WeatherGPT Assistant</span>
                   </div>
-                  {msg.modelBadge && (
-                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-950 border border-slate-800 text-slate-400">
-                      {msg.modelBadge}
-                    </span>
-                  )}
                 </div>
               )}
 

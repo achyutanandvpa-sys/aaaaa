@@ -14,6 +14,7 @@ import {
 import {
   CITIES_130_MASTER,
   generateModelOutputsForCity,
+  snapCoordinatesToNearestStation,
 } from './data/citiesData.ts';
 import {
   AlertNotificationSettings,
@@ -34,6 +35,7 @@ import { AIAnalystModal } from './components/AIAnalystModal.tsx';
 import { SearchModal } from './components/SearchModal.tsx';
 import { RadarAlertBanner } from './components/RadarAlertBanner.tsx';
 import { RadarAlertModal } from './components/RadarAlertModal.tsx';
+import { WaterloggingDashboard } from './components/WaterloggingDashboard.tsx';
 
 export default function App() {
   // Initialize all 130 city model predictions
@@ -42,12 +44,17 @@ export default function App() {
   });
 
   const [activeModelTab, setActiveModelTab] = useState<ActiveModelTab>('all');
-  const [activeViewStyle, setActiveViewStyle] = useState<ActiveViewStyle>('map');
+  const [activeViewStyle, setActiveViewStyle] = useState<ActiveViewStyle>('dashboard');
   const [selectedRegion, setSelectedRegion] = useState<string>('All Regions');
 
-  // Selected city for deep inspection
+  // Selected city for deep inspection (Default to Guntur matching user's requested dashboard)
   const [selectedCity, setSelectedCity] = useState<CityModelOutput | null>(() => {
-    return citiesData.find((c) => c.city.id === 10) || citiesData[0] || null;
+    return (
+      citiesData.find((c) => c.city.name.toLowerCase() === 'guntur') ||
+      citiesData.find((c) => c.city.id === 33) ||
+      citiesData[0] ||
+      null
+    );
   });
 
   // Target city for flying map camera
@@ -87,6 +94,31 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   const lastDispatchedAlertRef = useRef<string | null>(null);
+
+  // Auto-fetch user location from browser geolocation without requiring manual selection
+  useEffect(() => {
+    if (typeof window !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          const snap = snapCoordinatesToNearestStation(latitude, longitude);
+          setUserLocation({
+            lat: latitude,
+            lng: longitude,
+            label: `${snap.nearestCity.city.name} (${snap.nearestCity.city.state})`,
+            source: 'device_gps',
+            timestamp: new Date().toISOString(),
+          });
+          setNearestStationSnap(snap);
+          setSelectedCity(snap.nearestCity);
+        },
+        () => {
+          // Keep current preset if location denied or unavailable
+        },
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    }
+  }, []);
 
   // Evaluate user geofence against all 130 city 3-hour disaster predictions
   const radarEvaluation = useMemo(() => {
@@ -194,10 +226,10 @@ export default function App() {
     );
   };
 
-  // Click on a city: set selected city and open details modal
+  // Click on a city: set selected city and show place dashboard
   const handleSelectCity = (city: CityModelOutput) => {
     setSelectedCity(city);
-    setIsDetailModalOpen(true);
+    setActiveViewStyle('dashboard');
   };
 
   // Fly to city on tactical map
@@ -206,6 +238,43 @@ export default function App() {
     setFlyToCity(city);
     setActiveViewStyle('map');
   };
+
+  // If Place Dashboard view is active, render the full-screen Waterlogging Dashboard matching user's reference
+  if (activeViewStyle === 'dashboard' && selectedCity) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-[#0c182d] font-sans">
+        <WaterloggingDashboard
+          cityData={selectedCity}
+          allCities={citiesData}
+          onSelectCity={(city) => setSelectedCity(city)}
+          onSwitchToMap={() => setActiveViewStyle('map')}
+          onOpenSearch={() => setIsSearchOpen(true)}
+          onCropChange={handleCropChange}
+        />
+
+        {/* Global Search Modal accessible from dashboard */}
+        <SearchModal
+          isOpen={isSearchOpen}
+          onClose={() => setIsSearchOpen(false)}
+          cities={citiesData}
+          onSelectCity={(c) => {
+            setSelectedCity(c);
+            setFlyToCity(c);
+            setActiveViewStyle('dashboard');
+          }}
+        />
+
+        {/* AI Analyst Modal if invoked */}
+        {isAIAnalystOpen && (
+          <AIAnalystModal
+            onClose={() => setIsAIAnalystOpen(false)}
+            initialCity={selectedCity}
+            allCities={citiesData}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#07090e] text-slate-100 overflow-hidden font-mono">
@@ -250,6 +319,7 @@ export default function App() {
           <IndiaMap
             cities={filteredCities}
             activeModelTab={activeModelTab}
+            onSelectModelTab={setActiveModelTab}
             selectedCity={selectedCity}
             onSelectCity={handleSelectCity}
             flyToCity={flyToCity}
@@ -335,7 +405,7 @@ export default function App() {
           }}
           onSelectCity={(city) => {
             setSelectedCity(city);
-            setIsDetailModalOpen(true);
+            setActiveViewStyle('dashboard');
           }}
         />
       )}
@@ -355,7 +425,7 @@ export default function App() {
         onSelectCity={(c) => {
           setSelectedCity(c);
           setFlyToCity(c);
-          setIsDetailModalOpen(true);
+          setActiveViewStyle('dashboard');
         }}
       />
     </div>

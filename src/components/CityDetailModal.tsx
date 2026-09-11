@@ -73,7 +73,7 @@ export const CityDetailModal: React.FC<CityDetailModalProps> = ({
       const data = await res.json();
       setAiReport(data.report || 'Tactical analysis generated.');
     } catch (_err) {
-      setAiReport('Could not contact Gemini AI service. Check network or server configuration.');
+      setAiReport('Could not contact AI service. Check network or server configuration.');
     } finally {
       setIsAiLoading(false);
     }
@@ -119,7 +119,7 @@ export const CityDetailModal: React.FC<CityDetailModalProps> = ({
               onClick={handleTriggerAI}
               disabled={isAiLoading}
               className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-950 to-blue-950 border border-cyan-700 text-cyan-300 hover:text-white flex items-center gap-1.5 transition-all shadow-sm"
-              title="Run Gemini AI Model Synthesis"
+              title="Run AI Model Synthesis"
             >
               {isAiLoading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />

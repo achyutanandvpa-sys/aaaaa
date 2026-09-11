@@ -165,10 +165,10 @@ export function playEmergencyAlertSound() {
 }
 
 // Physical device vibration if supported by mobile/browser
-export function triggerDeviceVibration() {
+export function triggerDeviceVibration(pattern: number | number[] = [300, 150, 300, 150, 450]) {
   if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
     try {
-      navigator.vibrate([300, 150, 300, 150, 450]);
+      navigator.vibrate(pattern);
     } catch {
       // Ignore vibration errors
     }

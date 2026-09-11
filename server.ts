@@ -167,23 +167,26 @@ app.get("/api/nearest", (req, res) => {
 });
 
 // Timeout wrapper to guarantee swift fallback under high demand
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, _label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  // Guard against unhandled promise rejections if the background request settles after timeout
+  promise.catch(() => {});
   return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
-    ),
+    promise.finally(() => clearTimeout(timer)),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs);
+    }),
   ]);
 }
 
-// Resilient Gemini Generator with multi-tier fallback to handle 503 high-demand spikes
+// Resilient Gemini Generator with graceful fallback to handle 503 high-demand spikes smoothly
 async function generateGeminiContentWithFallback(
   ai: GoogleGenAI,
   prompt: string,
   systemInstruction: string,
   temperature: number = 0.35
-): Promise<{ text: string; model: string }> {
-  // Tier 1: Try gemini-3.8-flash first with 7s timeout
+): Promise<{ text: string; model: string } | null> {
+  // Tier 1: gemini-3.8-flash (official primary model for basic text and chat tasks)
   try {
     const res = await withTimeout(
       ai.models.generateContent({
@@ -194,38 +197,17 @@ async function generateGeminiContentWithFallback(
           temperature,
         },
       }),
-      7000,
+      12000,
       "gemini-3.8-flash"
     );
     if (res.text) {
       return { text: res.text, model: "gemini-3.8-flash" };
     }
-  } catch (err: any) {
-    console.warn("gemini-3.8-flash busy/unavailable/timed-out (503/demand spike), attempting gemini-3.6-flash fallback:", err?.message || err);
+  } catch (_err) {
+    // Model may be under temporary peak demand or timeout; gracefully try lightweight tier
   }
 
-  // Tier 2: Try gemini-3.6-flash if 3.8 is overloaded with 6s timeout
-  try {
-    const res = await withTimeout(
-      ai.models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: prompt,
-        config: {
-          systemInstruction,
-          temperature,
-        },
-      }),
-      6000,
-      "gemini-3.6-flash"
-    );
-    if (res.text) {
-      return { text: res.text, model: "gemini-3.6-flash" };
-    }
-  } catch (err: any) {
-    console.warn("gemini-3.6-flash also busy/unavailable/timed-out, attempting gemini-3.1-flash-lite fallback:", err?.message || err);
-  }
-
-  // Tier 3: Try gemini-3.1-flash-lite if 3.6 is overloaded with 5s timeout
+  // Tier 2: gemini-3.1-flash-lite (official lightweight model for high-throughput / high-demand fallback)
   try {
     const res = await withTimeout(
       ai.models.generateContent({
@@ -236,17 +218,17 @@ async function generateGeminiContentWithFallback(
           temperature,
         },
       }),
-      5000,
+      8000,
       "gemini-3.1-flash-lite"
     );
     if (res.text) {
       return { text: res.text, model: "gemini-3.1-flash-lite" };
     }
-  } catch (err: any) {
-    console.warn("gemini-3.1-flash-lite also busy/unavailable/timed-out:", err?.message || err);
+  } catch (_err) {
+    // Graceful fallback to deterministic local synthesis engine
   }
 
-  throw new Error("All Gemini models temporarily at peak demand");
+  return null;
 }
 
 function generateTelemetrySynthesisReport(
@@ -323,30 +305,37 @@ Focus Area: ${focusArea || "Combined Intelligence"}`;
       0.35
     );
 
+    if (!genResult) {
+      res.json({
+        report: generateTelemetrySynthesisReport(targetCity, modelOutput, customPrompt, focusArea),
+        model: "WeatherGPT-Synthesis-Engine",
+        city: targetCity,
+      });
+      return;
+    }
+
     res.json({
       report: genResult.text,
       model: genResult.model,
       city: targetCity,
     });
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.warn("AI Analysis Graceful Fallback:", error?.message);
+  } catch (_err) {
     res.json({
       report: generateTelemetrySynthesisReport(targetCity, modelOutput, customPrompt, focusArea),
-      model: "WeatherGPT-Synthesis-Engine (High Demand Mode)",
+      model: "WeatherGPT-Synthesis-Engine",
       city: targetCity,
     });
   }
 });
 
-// Helper for high-fidelity multilingual fallback answers
+// Helper for high-fidelity multilingual fallback answers strictly adhering to WeatherGPT AI Agent rules
 function getMultilingualFallbackResponse(
   query: string,
   city: any,
   telemetry: any,
   langCode: string
 ): string {
-  const q = (query || "").toLowerCase();
+  const q = (query || "").trim().toLowerCase();
   const c = city.name;
   const temp = Math.round(telemetry.weather.tempC);
   const feels = Math.round(telemetry.weather.feelsLikeC);
@@ -363,48 +352,140 @@ function getMultilingualFallbackResponse(
   const crop = telemetry.agro.cropName;
   const soilMoisture = telemetry.agro.soilMoisturePct;
   const irrigation = telemetry.agro.irrigationAdvisory;
-  const pestRisk = telemetry.agro.pestRisk;
+  const soilStatus = telemetry.agro.soilStatus;
 
-  switch (langCode) {
-    case 'hi':
-      if (q.includes('barish') || q.includes('बारिश') || q.includes('मौसम') || q.includes('rain') || q.includes('weather')) {
-        return `🌦️ **${c} का 1-घंटा मौसम रडार:**\n- वर्तमान तापमान: **${temp}°C** (महसूस हो रहा: ${feels}°C)\n- बारिश का अनुमान: **${rainMm} मिमी/घं (${rainProb}% संभावना)**\n- हवा की गति: ${wind} किमी/घंटा, नमी: ${humidity}%\n- वायु गुणवत्ता (AQI): **${aqi} (${aqiStatus})**\n- 60-मिनट पूर्वानुमान: ${telemetry.weather.forecastNext1h}`;
-      }
-      if (q.includes('disaster') || q.includes('आपदा') || q.includes('alert') || q.includes('अलर्ट') || q.includes('खतरा')) {
-        return `🚨 **${c} 3-घंटे का आपदा जोखिम चेतावनी:**\n- जोखिम स्तर: **${riskLevel} (${riskScore}/100)**\n- मुख्य खतरा: **${hazard}** (समय: ${leadTime})\n- सक्रिय प्रोटोकॉल: ${telemetry.disaster.activeNDMAProtocol}\n- आपातकालीन हेल्पलाइन: **1078 (एनडीएमए) / 112**`;
-      }
-      return `🌾 **${c} के लिए विस्तृत मौसम एवं कृषि सलाह:**\n- मौसम: ${temp}°C, नमी: ${humidity}%, बारिश: ${rainMm} mm/hr\n- फसल: **${crop}** (उपयुक्तता: ${telemetry.agro.suitabilityScore}%)\n- मिट्टी की नमी: ${soilMoisture}% | सिंचाई: ${irrigation}\n- कीट जोखिम: ${pestRisk} | आपदा चेतावनी: ${riskLevel} (${hazard})`;
+  // 1. GREETINGS & CASUAL CHAT CHECK
+  const isGreeting = /^(hi|hello|hey|namaste|namaskar|pranam|नमस्ते|हेलो|हाय|प्रणाम|kem cho|vanakkam|sat sri akal|aadab)[\s!.,?]*$/i.test(q) ||
+    /^(good morning|good afternoon|good evening|शुभ प्रभात|शुभ संध्या)/i.test(q);
 
-    case 'bn':
-      return `🌦️ **${c} আবহাওয়া ও দুর্যোগ সতর্কতা (WeatherGPT):**\n- তাপমাত্রা: **${temp}°C** | আর্দ্রতা: **${humidity}%**\n- বৃষ্টিপাত: **${rainMm} মিমি (${rainProb}%)** | বাতাসের গতি: ${wind} কিমি/ঘণ্টা\n- ৩-ঘণ্টার দুর্যোগের ঝুঁকি: **${riskLevel}** (${hazard}, লিড টাইম: ${leadTime})\n- ফসল (${crop}): মাটির আর্দ্রতা ${soilMoisture}%, সেচ: ${irrigation}\n- জরুরি সহায়তা: **1078 / 112**`;
-
-    case 'te':
-      return `🌦️ **${c} వాతావరణం మరియు విపత్తు నివేదిక:**\n- ఉష్ణోగ్రత: **${temp}°C** (తేమ: ${humidity}%, గాలి: ${wind} km/h)\n- రాబోయే 1 గంట వర్షపాతం: **${rainMm} mm (${rainProb}%)**\n- 3-గంటల విపత్తు ముప్పు: **${riskLevel}** (${hazard}, సమయం: ${leadTime})\n- వ్యవసాయ సలహా (${crop}): నేల తేమ ${soilMoisture}%, నీటిపారుదల: ${irrigation}\n- అత్యవసర హెల్ప్‌లైన్: **1078 / 112**`;
-
-    case 'ta':
-      return `🌦️ **${c} நேரடி வானிலை மற்றும் பேரிடர் முன்னறிவிப்பு:**\n- வெப்பநிலை: **${temp}°C** | ஈரப்பதம்: **${humidity}%**\n- 1 மணிநேர மழை: **${rainMm} மிமீ (${rainProb}%)**\n- 3 மணிநேர பேரிடர் எச்சரிக்கை: **${riskLevel}** (${hazard}, அவகாசம்: ${leadTime})\n- வேளாண் வழிகாட்டல் (${crop}): மண் ஈரம் ${soilMoisture}%, பாசனம்: ${irrigation}\n- தேசிய அவசர உதவி எண்: **1078 / 112**`;
-
-    case 'mr':
-      return `🌦️ **${c} थेट हवामान आणि आपत्ती इशारा:**\n- तापमान: **${temp}°C** (जाणवणारे: ${feels}°C), आर्द्रता: **${humidity}%**\n- पुढील १ तासात पाऊस: **${rainMm} मिमी (${rainProb}% शक्यता)**\n- ३-तास आपत्ती धोका: **${riskLevel}** (${hazard}, वेळ: ${leadTime})\n- पीक सल्ला (${crop}): मातीतील ओलावा ${soilMoisture}%, सिंचन: ${irrigation}\n- राष्ट्रीय आपत्ती हेल्पलाईन: **1078 / 112**`;
-
-    case 'gu':
-      return `🌦️ **${c} લાઈવ હવામાન અને આપત્તિ ચેતવણી:**\n- તાપમાન: **${temp}°C** | ભેજ: **${humidity}%**\n- આગામી 1 કલાક વરસાદ: **${rainMm} મિમી (${rainProb}%)**\n- 3-કલાક આપત્તિ જોખમ: **${riskLevel}** (${hazard})\n- કૃષિ સલાહ (${crop}): જમીનનો ભેજ ${soilMoisture}%, પિયત: ${irrigation}\n- ઈમરજન્સી હેલ્પલાઈન: **1078 / 112**`;
-
-    case 'kn':
-      return `🌦️ **${c} ಹವಾಮಾನ ಮತ್ತು ವಿಪತ್ತು ಮುನ್ಸೂಚನೆ:**\n- ತಾಪಮಾನ: **${temp}°C**, ತೇವಾಂಶ: **${humidity}%**\n- 1 ಗಂಟೆಯ ಮಳೆ: **${rainMm} mm (${rainProb}%)**\n- 3 ಗಂಟೆಯ ವಿಪತ್ತು ಎಚ್ಚರಿಕೆ: **${riskLevel}** (${hazard})\n- ಬೆಳೆ ಮಾಹಿತಿ (${crop}): ಮಣ್ಣಿನ ತೇವಾಂಶ ${soilMoisture}%, ನೀರಾವರಿ: ${irrigation}\n- ತುರ್ತು ಸಹಾಯವಾಣಿ: **1078 / 112**`;
-
-    case 'ml':
-      return `🌦️ **${c} തത്സമയ കാലാവസ്ഥയും ദുരന്ത മുന്നറിയിപ്പും:**\n- താപനില: **${temp}°C** | ഈർപ്പം: **${humidity}%**\n- 1 മണിക്കൂറിലെ മഴ: **${rainMm} mm (${rainProb}%)**\n- 3 മണിക്കൂറിലെ ദുരന്ത സാധ്യത: **${riskLevel}** (${hazard})\n- കൃഷി നിർദ്ദേശം (${crop}): മണ്ണിലെ ഈർപ്പം ${soilMoisture}%, ജലസേചനം: ${irrigation}\n- ദുരന്ത നിവാരണ ഹെൽപ്പ്‌ലൈൻ: **1078 / 112**`;
-
-    case 'pa':
-      return `🌦️ **${c} ਲਾਈਵ ਮੌਸਮ ਅਤੇ ਆਫ਼ਤ ਚਿਤਾਵਨੀ:**\n- ਤਾਪਮਾਨ: **${temp}°C**, ਨਮੀ: **${humidity}%**\n- ਅਗਲੇ 1 ਘੰਟੇ ਵਿੱਚ ਮੀਂਹ: **${rainMm} mm (${rainProb}%)**\n- 3 ਘੰਟਿਆਂ ਦਾ ਆਫ਼ਤ ਖ਼ਤਰਾ: **${riskLevel}** (${hazard})\n- ਖੇਤੀ ਸਲਾਹ (${crop}): ਮਿੱਟੀ ਦੀ ਨਮੀ ${soilMoisture}%, ਸਿੰਚਾਈ: ${irrigation}\n- ਐਮਰਜੈਂਸੀ ਹੈਲਪਲਾਈਨ: **1078 / 112**`;
-
-    case 'or':
-      return `🌦️ **${c} ପାଣିପାଗ ଏବଂ ବିପର୍ଯ୍ୟୟ ଚେତାବନୀ:**\n- ତାପମାତ୍ରା: **${temp}°C**, ଆର୍ଦ୍ରତା: **${humidity}%**\n- ୧-ଘଣ୍ଟାର ବର୍ଷା: **${rainMm} mm (${rainProb}%)**\n- ୩-ଘଣ୍ଟା ବିପର୍ଯ୍ୟୟ ବିପଦ: **${riskLevel}** (${hazard})\n- କୃଷି ପରାମର୍ଶ (${crop}): ମାଟିର ଆର୍ଦ୍ରତା ${soilMoisture}%, ଜଳସେଚନ: ${irrigation}\n- ଜରୁରୀକାଳୀନ ହେଲ୍ପଲାଇନ: **1078 / 112**`;
-
-    default:
-      return `🌦️ **WeatherGPT Live Operational Intel for ${c}:**\n- **1-Hour Nowcast:** ${temp}°C (Feels ${feels}°C), Rain: ${rainMm} mm/h (${rainProb}% prob), Wind: ${wind} km/h, Humidity: ${humidity}%, AQI: ${aqi} (${aqiStatus})\n- **3-Hour Disaster Risk:** ${riskLevel} (${riskScore}/100) - ${hazard} [Lead Time: ${leadTime}]\n- **Agro Intel:** Target Crop: ${crop}, Soil Moisture: ${soilMoisture}%, Irrigation: ${irrigation}\n- **Emergency NDMA Hotline:** 1078 or 112`;
+  if (isGreeting) {
+    switch (langCode) {
+      case 'hi':
+        return `नमस्ते! वर्तमान में आपकी लोकेशन के निकट **#${city.id} ${c}** (${city.state}) स्टेशन सक्रिय है। आप क्या जानना चाहते हैं?`;
+      case 'bn':
+        return `নমস্কার! বর্তমানে আপনার অবস্থানের নিকটবর্তী **#${city.id} ${c}** স্টেশন সক্রিয় রয়েছে। আমি আপনাকে কীভাবে সাহায্য করতে পারি?`;
+      case 'te':
+        return `నమస్కారం! ప్రస్తుతం మీ లొకేషన్ సమీపంలోని **#${city.id} ${c}** స్టేషన్ మానిటర్ చేయబడుతోంది. నేను మీకు ఎలా సహాయపడగలను?`;
+      case 'ta':
+        return `வணக்கம்! தற்போது உங்கள் இருப்பிடத்திற்கு அருகிலுள்ள **#${city.id} ${c}** நிலையம் கண்காணிக்கப்படுகிறது. நான் உங்களுக்கு எவ்வாறு உதவலாம்?`;
+      case 'mr':
+        return `नमस्कार! सध्या आपल्या स्थानाजवळील **#${city.id} ${c}** स्टेशन सक्रिय आहे. मी आपल्याला काय मदत करू शकतो?`;
+      case 'gu':
+        return `નમસ્તે! હાલમાં તમારા લોકેશન નજીકનું **#${city.id} ${c}** સ્ટેશન સક્રિય છે. હું તમને કેવી રીતે મદદ કરી શકું?`;
+      case 'kn':
+        return `ನಮಸ್ಕಾರ! ಪ್ರಸ್ತುತ ನಿಮ್ಮ ಸ್ಥಳದ ಹತ್ತಿರದ **#${city.id} ${c}** ನಿಲ್ದಾಣ ಸಕ್ರಿಯವಾಗಿದೆ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?`;
+      case 'ml':
+        return `നമസ്കാരം! നിലവിൽ നിങ്ങളുടെ ലൊക്കേഷന് അടുത്തുള്ള **#${city.id} ${c}** സ്റ്റേഷൻ നിരീക്ഷിക്കുന്നു. ഞാൻ എങ്ങനെ സഹായിക്കാം?`;
+      case 'pa':
+        return `ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਇਸ ਵੇਲੇ ਤੁਹਾਡੇ ਸਥਾਨ ਨੇੜੇ **#${city.id} ${c}** ਸਟੇਸ਼ਨ ਨਿਗਰਾਨੀ ਹੇਠ ਹੈ। ਮੈਂ ਤੁਹਾਡੀ ਕੀ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ?`;
+      default:
+        return `Hello! Currently monitoring station **#${city.id} ${c}**, ${city.state} for your location. What would you like to know?`;
+    }
   }
+
+  // 2. SPECIFIC WEATHER METRICS: ANSWER ONLY WHAT IS ASKED
+  const isRainQuery = q.includes('barish') || q.includes('बारिश') || q.includes('वर्षा') || q.includes('rain') || q.includes('precipitation');
+  if (isRainQuery) {
+    if (rainMm > 0.5) {
+      return langCode === 'hi'
+        ? `अगले 1 घंटे में **${rainMm} मिमी/घंटा** बारिश होने की संभावना है (${rainProb}% संभावना)।`
+        : `Rain expected in the next 1 hour: **${rainMm} mm/h** (${rainProb}% chance).`;
+    }
+    return langCode === 'hi'
+      ? `अगले 1 घंटे में **बारिश की संभावना नहीं है** (${rainMm} मिमी/घंटा, ${rainProb}% संभावना)।`
+      : `No significant rain expected in the next 1 hour (${rainMm} mm/h, ${rainProb}% chance).`;
+  }
+
+  const isTempQuery = q.includes('temp') || q.includes('तापमान') || q.includes('गर्मी') || q.includes('heat') || q.includes('cold') || q.includes('ठंड');
+  if (isTempQuery) {
+    return langCode === 'hi'
+      ? `वर्तमान तापमान **${temp}°C** है (महसूस हो रहा: ${feels}°C)।`
+      : `The current temperature is **${temp}°C** (feels like ${feels}°C).`;
+  }
+
+  const isWindQuery = q.includes('wind') || q.includes('हवा') || q.includes('आंधी') || q.includes('तूफान');
+  if (isWindQuery) {
+    return langCode === 'hi'
+      ? `हवा की गति **${wind} किमी/घंटा** (${telemetry.weather.windDirection}) है।`
+      : `Wind speed is **${wind} km/h** (${telemetry.weather.windDirection}).`;
+  }
+
+  const isHumidityQuery = q.includes('humidity') || q.includes('आर्द्रता') || q.includes('उमस') || q.includes('सीलन');
+  if (isHumidityQuery) {
+    return langCode === 'hi'
+      ? `वर्तमान में हवा में आर्द्रता (Humidity) **${humidity}%** है।`
+      : `Relative humidity is **${humidity}%**.`;
+  }
+
+  const isAqiQuery = q.includes('aqi') || q.includes('pollution') || q.includes('प्रदूषण') || q.includes('हवा की गुणवत्ता');
+  if (isAqiQuery) {
+    return langCode === 'hi'
+      ? `वायु गुणवत्ता सूचकांक (AQI) **${aqi}** (${aqiStatus}) है।`
+      : `Air Quality Index (AQI) is **${aqi}** (${aqiStatus}).`;
+  }
+
+  // 3. SPECIFIC DISASTER / HAZARD / ALERT QUERY
+  const isHazardQuery = q.includes('disaster') || q.includes('आपदा') || q.includes('alert') || q.includes('अलर्ट') || q.includes('खतरा') || q.includes('hazard') || q.includes('emergency') || q.includes('हेल्पलाइन') || q.includes('cyclone') || q.includes('flood');
+  if (isHazardQuery) {
+    if (langCode === 'hi') {
+      return `🚨 **${c} आपदा स्थिति:** जोखिम स्तर **${riskLevel}** (${riskScore}/100)। मुख्य खतरा: **${hazard}** (समय: ${leadTime})। ${telemetry.disaster.activeNDMAProtocol}`;
+    }
+    return `🚨 **${c} Hazard Status:** Risk level **${riskLevel}** (${riskScore}/100). Primary hazard: **${hazard}** (Lead time: ${leadTime}). ${telemetry.disaster.activeNDMAProtocol}`;
+  }
+
+  // 4. SPECIFIC AGRO / CROP / IRRIGATION QUERIES
+  const isIrrigationQuery = q.includes('irrigation') || q.includes('सिंचाई') || q.includes('पानी देना') || q.includes('water');
+  if (isIrrigationQuery) {
+    let adviceHi = '';
+    let adviceEn = '';
+    if (soilMoisture < 35 && rainMm < 1) {
+      adviceHi = `मिट्टी में नमी कम (${soilMoisture}%) है और बारिश नहीं है, अतः **हल्की सिंचाई तुरंत करें**।`;
+      adviceEn = `Soil moisture is low (${soilMoisture}%) with no rain; **light irrigation is recommended**.`;
+    } else if (soilMoisture > 65 || rainMm >= 1) {
+      adviceHi = `मिट्टी में पर्याप्त नमी (${soilMoisture}%) है और बारिश संभव है, अतः **सिंचाई स्थगित रखें**।`;
+      adviceEn = `Soil moisture is high (${soilMoisture}%) with rain likely; **pause irrigation**.`;
+    } else {
+      adviceHi = `मिट्टी की नमी ${soilMoisture}% सामान्य है। ${irrigation}`;
+      adviceEn = `Soil moisture is ${soilMoisture}%. ${irrigation}`;
+    }
+    return langCode === 'hi' ? `${crop} फसल: ${adviceHi}` : `For ${crop}: ${adviceEn}`;
+  }
+
+  const isFertilizerQuery = q.includes('fertilizer') || q.includes('खाद') || q.includes('उर्वरक') || q.includes('nutrient');
+  if (isFertilizerQuery) {
+    return langCode === 'hi'
+      ? `${crop} के लिए खाद/पोषक सलाह: ${telemetry.agro.fertilizerTip}`
+      : `Fertilizer advice for ${crop}: ${telemetry.agro.fertilizerTip}`;
+  }
+
+  const isPestQuery = q.includes('pest') || q.includes('कीट') || q.includes('रोग') || q.includes('spray') || q.includes('छिड़काव');
+  if (isPestQuery) {
+    return langCode === 'hi'
+      ? `${crop} कीट जोखिम: **${telemetry.agro.pestRisk}**। ${telemetry.agro.pestDetails}`
+      : `Pest risk for ${crop}: **${telemetry.agro.pestRisk}**. ${telemetry.agro.pestDetails}`;
+  }
+
+  const isAgroQuery = q.includes('crop') || q.includes('फसल') || q.includes('soil') || q.includes('मिट्टी') || q.includes('moisture') || q.includes('नमी');
+  if (isAgroQuery) {
+    return langCode === 'hi'
+      ? `${crop} के लिए मिट्टी की नमी **${soilMoisture}%** (${soilStatus}) है। ${irrigation}`
+      : `For ${crop}: Soil moisture is **${soilMoisture}%** (${soilStatus}). ${irrigation}`;
+  }
+
+  // 5. GENERAL WEATHER QUERY (e.g. "aaj ka mausam" / "weather today")
+  const isGeneralWeather = q.includes('मौसम') || q.includes('weather') || q.includes('nowcast');
+  if (isGeneralWeather) {
+    return langCode === 'hi'
+      ? `**${c} मौसम:** तापमान ${temp}°C, बारिश ${rainMm} मिमी/घं (${rainProb}%), आर्द्रता ${humidity}%, हवा ${wind} किमी/घं।`
+      : `**${c} Weather:** Temp ${temp}°C, Rain ${rainMm} mm/h (${rainProb}%), Humidity ${humidity}%, Wind ${wind} km/h.`;
+  }
+
+  // 6. DEFAULT DIRECT SUMMARY (1 concise line)
+  if (langCode === 'hi') {
+    return `**${c} स्थिति:** तापमान ${temp}°C, बारिश ${rainMm} मिमी/घं, मिट्टी नमी ${soilMoisture}%, अलर्ट: ${riskLevel}।`;
+  }
+
+  return `**${c} Status:** Temp ${temp}°C, Rain ${rainMm} mm/h, Soil Moisture ${soilMoisture}%, Alert: ${riskLevel}.`;
 }
 
 // 7. Conversational Multilingual Agentic Chatbox with Google Gemini API
@@ -452,17 +533,22 @@ app.post("/api/ai/agent-chat", async (req, res) => {
 
     const targetLangLabel = languageNames[lang] || "Hindi (हिंदी)";
 
-    const systemInstruction = `You are WeatherGPT India's premier conversational AI Agentic Assistant for 130 cities across India.
-You integrate three AI/ML models:
-1. 1-Hour Weather Nowcast (hyper-local rain radar, temperature, wind, humidity, AQI)
-2. 3-Hour Disaster Risk Early Warning (NDMA protocols, cyclone/flood/heatwave lead time, helpline 1078/112)
-3. Agro-Meteorological Crop Intelligence (crop suitability, soil moisture, irrigation schedule, pest & pathogen control)
+    const systemInstruction = `You are "WeatherGPT AI Agent", an accurate meteorological and agricultural assistant for India.
 
-MANDATORY MULTILINGUAL RULE:
-The user selected language is: ${targetLangLabel}.
-You MUST reply fluently, naturally, and warmly in ${targetLangLabel} (in its native script, or English if English is selected).
-Use clear, concise bullet points and bold formatting. Keep responses easy to understand for farmers, citizens, and disaster teams.
-Always mention exact figures (temperature, rain mm, risk score, lead time) from the provided live telemetry.`;
+CRITICAL DIRECTIVE - STRICT MINIMALISM & RELEVANCE:
+1. GIVE ONLY THE DIRECT ANSWER TO EXACTLY WHAT THE USER ASKS. DO NOT GIVE UNNECESSARY THINGS OR UNREQUESTED METRICS.
+   - If the user asks about rain (e.g., "अगले 1 घंटे में क्या बारिश होगी?", "will it rain?", "barish kab hogi?"): Answer ONLY about rain/precipitation (probability, mm/h, time). DO NOT mention wind speed, temperature, humidity, AQI, crop data, or emergency helpline numbers unless specifically asked.
+   - If the user asks about temperature: Answer ONLY about the temperature and feels-like temperature.
+   - If the user asks about wind: Answer ONLY the wind speed and direction.
+   - If the user asks about air quality/AQI: Answer ONLY the AQI number and status category.
+   - If the user asks about disaster or hazard alerts: Answer ONLY the hazard risk level and safety directives.
+   - If the user asks about crop, irrigation, fertilizer, or pests: Answer ONLY that specific agricultural query.
+   - If the user sends a simple greeting ("hi", "hello", "namaste", "pranam"): Reply with a brief, friendly 1-sentence greeting acknowledging station #${targetCity.id} ${targetCity.name} and ask how you can assist. DO NOT output any weather/crop tables.
+
+2. LENGTH & FORMAT:
+   - Provide concise, direct responses (1 to 2 sentences). No unrequested bullet lists, no multi-category data dumps, no markdown tables unless the user explicitly requested a "full report".
+   - Ground strictly in the provided real-time station telemetry. Never fabricate numbers.
+   - Match user language: current interface language is ${targetLangLabel}, or answer in the specific language used by the user (Hindi, Hinglish, English, etc.).`;
 
     const liveTelemetry = `CURRENT LIVE TELEMETRY FOR STATION:
 City: ${targetCity.name} (#${targetCity.id}), State: ${targetCity.state}, Zone: ${targetCity.zone}
@@ -504,15 +590,29 @@ Coordinates: Lat ${targetCity.lat}, Lng ${targetCity.lng}
       0.4
     );
 
+    if (!genResult) {
+      const fallback = getMultilingualFallbackResponse(
+        lastUserMessage,
+        targetCity,
+        modelOutput,
+        lang
+      );
+      res.json({
+        reply: fallback,
+        model: "WeatherGPT-Engine",
+        city: targetCity,
+        languageCode: lang,
+      });
+      return;
+    }
+
     res.json({
       reply: genResult.text,
       model: genResult.model,
       city: targetCity,
       languageCode: lang,
     });
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.warn("Agent Chat Fallback Activated:", error?.message);
+  } catch (_err) {
     let targetCity = CITIES_130_MASTER[0];
     if (req.body?.cityId) {
       const found = findCityById(String(req.body.cityId));
@@ -529,7 +629,7 @@ Coordinates: Lat ${targetCity.lat}, Lng ${targetCity.lng}
     );
     res.json({
       reply: fallback,
-      model: "WeatherGPT-Safe-Fallback",
+      model: "WeatherGPT-Engine",
       city: targetCity,
       languageCode: lang,
     });

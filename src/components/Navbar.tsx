@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Layers,
   Radio,
+  LayoutDashboard,
 } from 'lucide-react';
 import { ActiveModelTab, ActiveViewStyle, CityModelOutput, RegionName } from '../types.ts';
 
@@ -94,6 +95,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* View Mode Switcher */}
         <div className="hidden lg:flex items-center bg-slate-900/90 p-1 rounded-xl border border-slate-800 text-xs font-mono">
+          <button
+            id="btn-view-dashboard"
+            onClick={() => onSelectViewStyle('dashboard')}
+            className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all ${
+              activeViewStyle === 'dashboard'
+                ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+            title="City Early-Warning & Waterlogging Dashboard"
+          >
+            <LayoutDashboard className="w-3.5 h-3.5 text-sky-300" />
+            <span>Place Dashboard</span>
+          </button>
           <button
             id="btn-view-map"
             onClick={() => onSelectViewStyle('map')}
@@ -199,7 +213,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             id="btn-ai-analyst"
             onClick={onOpenAIAnalyst}
             className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-950/80 to-blue-950/80 hover:from-cyan-900/80 hover:to-blue-900/80 border border-cyan-700/60 text-cyan-300 hover:text-white font-medium flex items-center gap-1.5 transition-all shadow-sm"
-            title="WeatherGPT AI Model Analyst (Gemini)"
+            title="WeatherGPT AI Model Analyst"
           >
             <Bot className="w-3.5 h-3.5 text-cyan-400" />
             <span className="hidden xs:inline font-semibold">AI Analyst</span>

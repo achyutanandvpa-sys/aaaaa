@@ -101,4 +101,4 @@ export interface NearestStationResult {
 }
 
 export type ActiveModelTab = 'all' | 'weather' | 'disaster' | 'agro';
-export type ActiveViewStyle = 'map' | 'globe' | 'mobile-app' | 'matrix';
+export type ActiveViewStyle = 'dashboard' | 'map' | 'globe' | 'mobile-app' | 'matrix';
